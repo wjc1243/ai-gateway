@@ -1,0 +1,23 @@
+server:
+  port: 8080
+spring:
+  application:
+    name: gateway-ai-mvc
+
+  # 虚拟线程
+  threads:
+    virtual:
+      enabled: true
+
+  data:
+    redis:
+      host:  ${REDIS_HOST:127.0.0.1}
+      port: 6379
+      password: ${REDIS_PASSWORD:}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+
+

@@ -1,0 +1,6 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {"role": "user", "content": "用一句话解释什么是API网关"}
+  ]
+}
