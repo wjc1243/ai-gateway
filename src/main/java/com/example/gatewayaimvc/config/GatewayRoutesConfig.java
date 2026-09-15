@@ -21,4 +21,12 @@ public class GatewayRoutesConfig {
                 .filter(filter)
                 .build();
     }
+
+    @Bean
+    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter filter){
+        return GatewayRouterFunctions.route("mock-ai-route")
+                .GET("/mock/ai", HandlerFunctions.http())
+                .before(uri("http://localhost:9000"))
+                .build();
+    }
 }

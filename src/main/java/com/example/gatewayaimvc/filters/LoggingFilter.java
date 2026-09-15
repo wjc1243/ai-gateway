@@ -15,6 +15,8 @@ public class LoggingFilter implements HandlerFilterFunction<ServerResponse, Serv
         long start = System.currentTimeMillis();
         log.info("请求进入: {} {}", request.method(), request.uri());
 
+        log.info("当前线程: {}", Thread.currentThread());
+
         ServerResponse response = next.handle(request);
 
         long cost = System.currentTimeMillis() - start;
