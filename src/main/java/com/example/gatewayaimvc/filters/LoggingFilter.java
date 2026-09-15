@@ -13,14 +13,14 @@ public class LoggingFilter implements HandlerFilterFunction<ServerResponse, Serv
     @Override
     public ServerResponse filter(ServerRequest request, HandlerFunction<ServerResponse> next) throws Exception {
         long start = System.currentTimeMillis();
-        log.info("请求进入: {} {}", request.method(), request.uri());
+        log.info("  ├ 转发开始 {} {}", request.method(), request.uri());
 
         log.info("当前线程: {}", Thread.currentThread());
 
         ServerResponse response = next.handle(request);
 
         long cost = System.currentTimeMillis() - start;
-        log.info("请求完成: {} {} | 耗时 {}ms | 状态码 {}",
+        log.info("  └ 转发完成 {} {}| 耗时 {}ms | 状态 {}",
                 request.method(), request.uri(), cost, response.statusCode());
         return response;
     }

@@ -52,6 +52,48 @@ CPU 完全空闲。这正是虚拟线程的主战场。
 | 总请求数 | 4538 | 3253 | +39% |
 | 失败数 | 0 | 0 | — |
 
+## 多路由结构架构
+```
+HTTP 请求
+  │
+  ├─【全局层】GlobalTraceFilter（Servlet Filter，@Order 0）
+  │    ├─ 生成/透传 requestId → 写入 MDC
+  │    ├─ 打印「→ 进入 method uri」
+  │    │
+  │    ├─【路由匹配】按 @Order 顺序匹配 RouterFunction
+  │    │
+  │    ├─【路由级 before 链】★ 按代码添加顺序执行
+  │    │    ① BeforeFilterFunctions.uri(目标地址)  ← 必须最先
+  │    │    ② 业务过滤器 A（将来：限流）
+  │    │    ③ 业务过滤器 B（将来：鉴权/计量）
+  │    │
+  │    ├─ HandlerFunctions.http() → 转发到上游
+  │    │
+  │    └─【after 语义】next.handle() 之后的代码（逆序回溯）
+  │         打印「转发完成」+ 耗时 + 状态码
+  │
+  └─【全局层】finally
+       ├─ 打印「← 完成 method uri | 总耗时 Nms | 状态 200」
+       └─ MDC.clear()（清理线程上下文）
+```
+### 过滤器执行顺序（实测结论）
+
+在 `mock-ai-route` 上依次注册探针 A、探针 B，实测输出：
+
+- → 进入 GET /mock/ai
+  -   [顺序] 探针 A 执行
+  -   [顺序] 探针 B 执行
+  -   ├ 转发开始 GET http://localhost:8080/mock/ai
+  -   线程: VirtualThread[#83,tomcat-handler-0]/runnable@ForkJoinPool-1-worker-1
+  -   └ 转发完成 GET http://localhost:8080/mock/ai| 耗时2172ms | 状态 200 OK
+- ← 完成 GET /mock/ai | 总耗时 2217ms | 状态 200
+
+**结论：`.filter()` 注册链按代码添加顺序正序执行**，
+`next.handle()` 之后的代码按调用栈逆序回溯（环绕通知语义）。
+
+**全局层与路由层耗时差**：2217ms（全局）− 2172ms（转发）= 45ms，
+即网关自身逻辑（路由匹配 + 过滤器链）开销。
+
 ### 数据解读
 
 **1. OFF 组的 100.51 req/s 不是巧合，是物理天花板**
@@ -274,7 +316,7 @@ curl http://localhost:8080/mock/ai
 | M1 | 新技术栈迁移 + 骨架跑通第一条链路 | ~15h | ✅ 完成                            |
 | **【核心能力：新技术栈】** | | |                                 |
 | M2 | 虚拟线程深入 + 项目异步化改造 | ~20h | 🔶 部分完成，延后至 M8（有真实阻塞点时改造，附对比数据） |
-| M3 | Gateway 路由与过滤器链设计 | ~15h | 🔜 进行中                          |
+| M3 | Gateway 路由与过滤器链设计 | ~15h | ✅ 完成                          |
 | **【核心功能：流量治理】** | | |                                 |
 | M4 | 分布式限流（多维度 + 降级） | ~18h | ⬜                               |
 | M5 | 熔断降级与多模型 failover | ~15h | ⬜                               |
