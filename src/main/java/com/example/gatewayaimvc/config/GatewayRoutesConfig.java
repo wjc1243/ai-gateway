@@ -1,6 +1,7 @@
 package com.example.gatewayaimvc.config;
 
 import com.example.gatewayaimvc.filters.LoggingFilter;
+import com.example.gatewayaimvc.filters.RateLimitFilter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cloud.gateway.server.mvc.handler.GatewayRouterFunctions;
 import org.springframework.cloud.gateway.server.mvc.handler.HandlerFunctions;
@@ -28,7 +29,7 @@ public class GatewayRoutesConfig {
 
     @Bean
     @Order(2)
-    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter filter){
+    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter filter, RateLimitFilter  rateLimitFilter){
         return GatewayRouterFunctions.route("mock-ai-route")
                 .GET("/mock/ai", HandlerFunctions.http())
                 .before(uri("http://localhost:9000"))
@@ -41,6 +42,7 @@ public class GatewayRoutesConfig {
                     log.info("  [顺序] 探针 B 执行");
                     return next.handle(request);
                 })
+                .filter(rateLimitFilter)
                 .filter(filter)
                 .build();
     }
