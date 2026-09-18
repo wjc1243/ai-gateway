@@ -29,21 +29,12 @@ public class GatewayRoutesConfig {
 
     @Bean
     @Order(2)
-    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter filter, RateLimitFilter  rateLimitFilter){
+    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter loggingFilter, RateLimitFilter  rateLimitFilter){
         return GatewayRouterFunctions.route("mock-ai-route")
                 .GET("/mock/ai", HandlerFunctions.http())
                 .before(uri("http://localhost:9000"))
-                // ↓ 顺序验证探针：确认 filter 链的执行顺序
-                .filter((request, next) -> {
-                    log.info("  [顺序] 探针 A 执行");
-                    return next.handle(request);
-                })
-                .filter((request, next) -> {
-                    log.info("  [顺序] 探针 B 执行");
-                    return next.handle(request);
-                })
                 .filter(rateLimitFilter)
-                .filter(filter)
+                .filter(loggingFilter)
                 .build();
     }
 }

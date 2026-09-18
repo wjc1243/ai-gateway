@@ -3,7 +3,7 @@
 基于 **Spring Cloud Gateway Server WebMVC + Java 21 虚拟线程** 构建的 AI 网关，
 统一管理大模型 API 的转发、限流、熔断、计量与鉴权。
 
-> 当前进度：**M1 完成 / M2 部分完成 / M3 完成 / M4 主链路完成（配置化与多维度待做）**
+> 当前进度：**M1 完成 / M2 部分完成 / M3 完成 / M4 完成**
 > 已完成模块均附带**真实压测数据**与**踩坑记录**。
 
 ---
@@ -164,7 +164,7 @@ MDC（Mapped Diagnostic Context）是 SLF4J 提供的线程级诊断上下文，
 
 ---
 
-## 分布式限流（M4 主链路已完成）
+## 分布式限流（M4 完成）
 
 ### 算法选型：令牌桶（而非漏桶）
 
@@ -191,6 +191,48 @@ Lua 脚本在 Redis 中单线程原子执行，中间不会被插队。脚本设
 
 Redis 故障时**放行而非拒绝**——限流是保护手段，不应成为单点故障。
 生产环境可按场景切换 fail-close（安全优先），但需明确取舍。
+
+### 多维度限流设计
+
+一个请求可同时受多个规则约束，**取最严者**（木桶短板）：
+
+| 维度 | Redis key 格式 | 解决的问题 |
+|---|---|---|
+| IP | `ratelimit:ip:{ip}` | 防单 IP 刷量 |
+| API Key | `ratelimit:key:{keyId}` | 按客户配额隔离 |
+| 模型 | `ratelimit:model:{model}` | 保护昂贵模型额度 |
+| 全局 | `ratelimit:global` | 保护上游总额度 |
+
+**关键：一次 Lua 判多桶，而非循环调用多次单桶脚本。**
+
+| 做法 | 并发安全 | 问题 |
+|---|---|---|
+| **一次 Lua 判多桶**（选用） | ✅ | 全部通过才扣减，无令牌浪费 |
+| Java 循环调 N 次单桶脚本 | ❌ | N 次调用间有网络往返间隙，会被插队 |
+
+多桶脚本采用**先算后扣**策略：
+
+1. **阶段一**：计算所有维度的当前令牌数，**不写回**
+2. **阶段二**：全部维度都满足才继续，任一不足则**直接返回拒绝**
+3. **阶段三**：统一扣减并写回
+
+**这样避免了"IP 维度扣了、Key 维度被拒"造成的令牌浪费**——被拒时一个令牌都不扣。
+
+### 配置化：yml + record 绑定
+
+限流参数从 yml 读取，不同维度可配不同阈值，新增维度无需改 Java 代码：
+
+| Java 类型 | yml 路径 |
+|---|---|
+| `Boolean enabled` | `gateway.ratelimit.enabled` |
+| `Map<String, Dimension> dimensions` | `gateway.ratelimit.dimensions.{ip\|key\|model}` |
+| `Dimension(Double rate, Integer capacity)` | `.rate` / `.capacity` |
+
+用 `Map` 承接维度的好处：**加一个维度只改 yml，Java 一行不动**。
+
+> ⚠️ **record 上不能加 `@Component`**——record 走构造器绑定，与 `@Component` 的
+> setter 绑定路径互斥，会报 `@ConstructorBinding but defined as Spring component`。
+> 正确做法：启动类加 `@ConfigurationPropertiesScan`。
 
 ### 实测数据
 
@@ -247,12 +289,20 @@ ttl = max(桶填满时间 × 2, 3600000)   -- 至少 1 小时
 
 **限流不只是"拦住超额请求"，更关键的是让超额请求快速失败，保护上游。**
 
-### M4 剩余项
+### M4 已知限制（待后续模块解决）
 
-- [ ] 配置化：rate / capacity 从 yml 读取，不同路由配不同阈值
-- [ ] 多维度限流：按 API Key / 租户 / 模型（当前仅按 IP）
-- [ ] 多维度原子性优化：避免"IP 维度扣了但 Key 维度被拒"的令牌浪费
-- [ ] 高并发压测验证
+以下问题当前**已知但未处理**，按影响程度排序：
+
+| 优先级 | 问题 | 计划 |
+|---|---|---|
+| ⚠️ 高 | API Key 取前 8 位作 keyId，存在**碰撞风险**（不同 key 前 8 位相同会被合并限流） | M9 鉴权时用真实 keyId 替换 |
+| ⚠️ 高 | `X-Forwarded-For` **可被伪造**，生产环境应只信任可信代理层 | 上生产前加固 |
+| ⚠️ 高 | **Lettuce 连接池可能成为新瓶颈**：限流让每请求多一次 Redis 调用，默认池上限偏低 | M14 压测时必须验证 |
+| 🔶 中 | 多实例机器**时钟若不同步**，令牌计算仍会偏差（时间戳由应用传入） | 生产环境配 NTP |
+| 🔶 中 | `remaining` 只返回各维度最小值，调用方无法看到各维度明细 | M11 可观测性扩展 |
+| 🔶 中 | 429 响应体为空，无结构化 JSON 错误提示 | 可加 `contentType(JSON).body(...)` |
+| 📌 低 | Redis **Cluster 模式下多 key 需同 slot**，否则报 `CROSSSLOT`；解法是用 hash tag 让同一用户的所有维度落同 slot | 当前单机无影响，需知晓 |
+| 📌 低 | 尚未在高并发压测下验证限流稳定性 | 建议 `k6 run --vus 100 --duration 30s` 观察 429 比例 |
 
 ---
 
@@ -282,13 +332,15 @@ ttl = max(桶填满时间 × 2, 3600000)   -- 至少 1 小时
 - [x] 全局层 / 路由层职责分离与耗时差值观测（83ms）
 - [x] requestId 全链路日志渲染
 
-### M4 分布式限流（主链路完成）
+### M4 分布式限流（多维度 + 降级）✅
 
 - [x] Redis + Lua 令牌桶（原子性）
 - [x] 按 IP 维度限流并实测生效
+- [x] **多维度限流**：一次 Lua 判多桶，先算后扣，无令牌浪费
+- [x] **配置化**：rate / capacity 从 yml 读取，用 `record` 绑定
 - [x] fail-open 降级容错
-- [x] Redis 状态验证与 TTL 过期机制
-- [ ] 配置化 / 多维度 / 高并发压测（见上节「M4 剩余项」）
+- [x] Redis 状态验证与 TTL 过期机制（含 1 小时保底）
+- [x] 429 快速失败，被拒请求不转发上游
 
 ---
 
@@ -317,6 +369,7 @@ IDEA：**Run → Edit Configurations → Environment variables** 填入真实值
 | DeepSeek 真实转发 | `POST /v1/chat/completions` | 返回模型响应 |
 | mock 压测链路 | `GET /mock/ai` | **2 秒后**返回 JSON |
 | 限流验证 | 串行请求 `/mock/ai` ×10 | 前 4 个 200，之后 429 |
+| 多维度验证 | 带 `Authorization: Bearer xxx` 请求后查 `KEYS ratelimit:*` | 出现 ip 与 key 两个独立 key |
 | 404 可观测性 | `GET /not-exist` | 仅全局层打日志 |
 
 请求体需为 **UTF-8 无 BOM**，否则 DeepSeek 会报 `invalid unicode code point`。
@@ -353,6 +406,8 @@ IDEA：**Run → Edit Configurations → Environment variables** 填入真实值
 |---|---|---|
 | `redis` 为 null（NPE） | 构造器注入未发生 | 字段必须加 `final`（`@RequiredArgsConstructor` 只处理 final 字段）；或手写构造器排除 Lombok 影响 |
 | 手动 `new` 导致注入失效 | 字段始终为 null | 过滤器/服务必须通过 Spring 容器获取，用方法参数注入 |
+| 配置类未注册 | `Not registered via @EnableConfigurationProperties` | 启动类加 `@ConfigurationPropertiesScan` |
+| record + `@Component` 冲突 | `Annotated with @ConstructorBinding but defined as Spring component` | **record 上删掉 `@Component`**，改由 `@ConfigurationPropertiesScan` 注册 |
 
 ### 环境 / 工具
 
@@ -395,7 +450,7 @@ IDEA：**Run → Edit Configurations → Environment variables** 填入真实值
 | M2 | 虚拟线程深入 + 项目异步化改造 | ~20h | 🔶 部分完成（异步化延后至 M8） |
 | M3 | Gateway 路由与过滤器链设计 | ~15h | ✅ 完成 |
 | **【核心功能：流量治理】** | | | |
-| M4 | 分布式限流（多维度 + 降级） | ~18h | 🔶 主链路完成 |
+| M4 | 分布式限流（多维度 + 降级） | ~18h | ✅ 完成 |
 | M5 | 熔断降级与多模型 failover | ~15h | ⬜ |
 | M6 | 模型适配层与协议标准化 | ~15h | ⬜ |
 | **【AI 特色功能】** | | | |
@@ -436,7 +491,8 @@ M12（新但非必需）、M15（有 Compose 打底，讲清差异即可）。
 > 突破 Tomcat 平台线程 `maxThreads=200` 的并发瓶颈；
 > ② 设计全局层与路由级两层过滤器链，实现 requestId 全链路追踪与
 > 网关自身开销可观测（实测 83ms）；
-> ③ 基于 Redis + Lua 实现分布式令牌桶限流，保证原子性，
+> ③ 基于 Redis + Lua 实现分布式令牌桶限流，支持 IP / API Key 多维度，
+> 一次 Lua 判多桶保证原子性并避免部分扣减造成的令牌浪费，
 > 采用 fail-open 降级避免 Redis 成为单点故障。
 
 

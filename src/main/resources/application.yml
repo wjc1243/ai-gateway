@@ -23,3 +23,16 @@ logging:
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%X{X-Request-Id}] %logger{20} - %msg%n"
 
+gateway:
+  ratelimit:
+    enabled: true
+    dimensions:
+      ip:
+        rate: 0.167
+        capacity: 3
+      key:
+        rate: 0.5
+        capacity: 10
+
+
+

@@ -7,6 +7,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Slf4j
@@ -16,39 +17,42 @@ public class RateLimitService {
 
     private final StringRedisTemplate redis;
 
-    private static final RedisScript<List> SCRIPT = RedisScript.of(
-            new ClassPathResource("lua/token_bucket.lua"), List.class);
+    private static final RedisScript<List> MULTI_SCRIPT = RedisScript.of(
+//            new ClassPathResource("lua/token_bucket.lua"), List.class);
+            new ClassPathResource("lua/token_bucket_multi.lua"), List.class);
 
     /** 限流判定结果 */
-    public record Result(boolean allowed, long remaining){}
+    public record Result(boolean allowed, long remaining, String blockedBy){}
 
-    /**
-     * 尝试获取令牌
-     * @param key       限流维度 key，如 ratelimit:ip:127.0.0.1
-     * @param rate      每秒生成令牌数（长期速率）
-     * @param capacity  桶容量（突发上限）
-     * @param requested 本次消耗令牌数
-     */
-    public Result tryAcquire(String key, double rate, int capacity, int requested) {
+    public record Dimension(String key, double rate, int capacity) {}
+
+    public Result tryAcquireAll(List<Dimension> dims, int requested) {
+        if (dims == null || dims.isEmpty()) {
+            return new Result(true, -1, "");
+        }
         try {
-            List<Object> res = redis.execute(SCRIPT,
-                    List.of(key),
-                    String.valueOf(rate),
-                    String.valueOf(capacity),
-                    String.valueOf(System.currentTimeMillis()),
-                    String.valueOf(requested));
+            List<String> keys = new ArrayList<>();
+            List<String> args = new ArrayList<>();
+            args.add(String.valueOf(System.currentTimeMillis()));
+            args.add(String.valueOf(requested));
+            for (Dimension d : dims) {
+                keys.add(d.key());
+                args.add(String.valueOf(d.rate()));
+                args.add(String.valueOf(d.capacity()));
+            }
 
+            List<Object> res = redis.execute(MULTI_SCRIPT, keys, args.toArray());
             if (res == null || res.isEmpty()) {
-                return new Result(true, capacity);   // 脚本异常 → 放行
+                return new Result(true, -1, "");
             }
             long allowed   = ((Number) res.get(0)).longValue();
             long remaining = ((Number) res.get(1)).longValue();
-            return new Result(allowed == 1, remaining);
+            String blockedBy = res.size() > 2 && res.get(2) != null ? res.get(2).toString() : "";
+            return new Result(allowed == 1, remaining, blockedBy);
 
         } catch (Exception e) {
-            // ★ 降级策略：Redis 故障时 fail-open（放行），避免网关整体不可用
-            log.error("限流脚本执行失败，降级放行 key={}", key, e);
-            return new Result(true, -1);
+            log.error("多维度限流脚本执行失败，降级放行", e);
+            return new Result(true, -1, "");
         }
     }
 }
