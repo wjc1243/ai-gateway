@@ -1,5 +1,7 @@
 package com.example.gatewayaimvc.config;
 
+import com.example.gatewayaimvc.filters.CircuitBreakerFilter;
+import com.example.gatewayaimvc.filters.FailoverFilter;
 import com.example.gatewayaimvc.filters.LoggingFilter;
 import com.example.gatewayaimvc.filters.RateLimitFilter;
 import lombok.extern.slf4j.Slf4j;
@@ -29,12 +31,39 @@ public class GatewayRoutesConfig {
 
     @Bean
     @Order(2)
-    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter loggingFilter, RateLimitFilter  rateLimitFilter){
+    public RouterFunction<ServerResponse> mockApiRoute(LoggingFilter loggingFilter,
+                                                       RateLimitFilter  rateLimitFilter,
+                                                       CircuitBreakerFilter circuitBreakerFilter,
+                                                       FailoverFilter failoverFilter){
         return GatewayRouterFunctions.route("mock-ai-route")
                 .GET("/mock/ai", HandlerFunctions.http())
                 .before(uri("http://localhost:9000"))
                 .filter(rateLimitFilter)
+                .filter(failoverFilter)
+                .filter(circuitBreakerFilter)
                 .filter(loggingFilter)
+                .build();
+    }
+
+    @Bean
+    @Order(3)
+    public RouterFunction<ServerResponse> mockFailRoute(CircuitBreakerFilter circuitBreakerFilter) {
+        return GatewayRouterFunctions.route("mock-fail-route")
+                .GET("/mock/fail/**", HandlerFunctions.http())
+                .before(uri("http://localhost:9000"))
+                .filter(circuitBreakerFilter)
+                .build();
+    }
+
+    @Bean
+    @Order(4)
+    public RouterFunction<ServerResponse> mockSlowRoute(CircuitBreakerFilter circuitBreakerFilter,
+                                                        FailoverFilter failoverFilter) {
+        return GatewayRouterFunctions.route("mock-slow-route")
+                .GET("/mock/slow", HandlerFunctions.http())
+                .before(uri("http://localhost:9000"))
+                .filter(failoverFilter)
+                .filter(circuitBreakerFilter)
                 .build();
     }
 }
