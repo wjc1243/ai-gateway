@@ -63,6 +63,47 @@ http.createServer((req, res) => {
         return;
     }
 
+    // ===== M6：模拟各家 AI 的不同响应格式 =====
+
+    // ① OpenAI / DeepSeek 兼容格式（content 在 choices[0].message.content）
+    if (path === '/openai/chat') {
+        setTimeout(() => send(200, {
+            id: 'chatcmpl-' + Date.now(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: 'deepseek-chat',
+            choices: [{
+                index: 0,
+                message: { role: 'assistant', content: '来自 OpenAI 兼容模型' },
+                finish_reason: 'stop'
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+        }), 1000);
+        return;
+    }
+
+    // ② 通义原生格式（content 在 output.text，token 字段名也不同）
+    if (path === '/qwen/chat') {
+        setTimeout(() => send(200, {
+            request_id: 'req-' + Date.now(),
+            output: { text: '来自通义原生模型', finish_reason: 'stop' },
+            usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 }
+        }), 1000);
+        return;
+    }
+
+    // ③ 「HTTP 200 但业务失败」：余额不足（OpenAI 兼容错误体）
+    if (path === '/openai/insufficient') {
+        send(200, {
+            error: {
+                message: '余额不足',
+                type: 'insufficient_quota',
+                code: 'insufficient_quota'
+            }
+        });
+        return;
+    }
+
     // 未知路径
     send(404, { error: 'not found', path });
 }).listen(PORT, () => console.log(`mock on ${PORT}, failMode=${failMode}`));
